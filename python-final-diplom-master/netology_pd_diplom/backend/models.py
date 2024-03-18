@@ -2,6 +2,7 @@ from django.contrib.auth.base_user import BaseUserManager
 from django.contrib.auth.models import AbstractUser
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.db import models
+from django.db.models import Sum, F
 from django.utils.translation import gettext_lazy as _
 from django_rest_passwordreset.tokens import get_token_generator
 
@@ -20,9 +21,6 @@ USER_TYPE_CHOICES = (
     ('buyer', 'Покупатель'),
 
 )
-
-
-# Create your models here.
 
 
 class UserManager(BaseUserManager):
@@ -65,9 +63,10 @@ class User(AbstractUser):
     """
     Стандартная модель пользователей
     """
-    REQUIRED_FIELDS = []
     objects = UserManager()
+    REQUIRED_FIELDS = []
     USERNAME_FIELD = 'email'
+
     email = models.EmailField(_('email address'), unique=True)
     company = models.CharField(verbose_name='Компания', max_length=40, blank=True)
     position = models.CharField(verbose_name='Должность', max_length=40, blank=True)
@@ -236,16 +235,16 @@ class Order(models.Model):
         verbose_name = 'Заказ'
         verbose_name_plural = "Список заказ"
         ordering = ('-dt',)
+    @property
+    def sum(self):
+        return self.ordered_items.aggregate(total=Sum(F("quantity")*F("product_info__price")))["total"]
 
     def __str__(self):
         return str(self.dt)
 
-    # @property
-    # def sum(self):
-    #     return self.ordered_items.aggregate(total=Sum("quantity"))["total"]
-
 
 class OrderItem(models.Model):
+
     objects = models.manager.Manager()
     order = models.ForeignKey(Order, verbose_name='Заказ', related_name='ordered_items', blank=True,
                               on_delete=models.CASCADE)
@@ -265,6 +264,7 @@ class OrderItem(models.Model):
 
 class ConfirmEmailToken(models.Model):
     objects = models.manager.Manager()
+
     class Meta:
         verbose_name = 'Токен подтверждения Email'
         verbose_name_plural = 'Токены подтверждения Email'

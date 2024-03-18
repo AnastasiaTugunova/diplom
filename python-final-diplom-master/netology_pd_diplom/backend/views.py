@@ -1,4 +1,6 @@
 from distutils.util import strtobool
+
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from django.contrib.auth import authenticate
 from django.contrib.auth.password_validation import validate_password
@@ -19,7 +21,7 @@ from backend.models import Shop, Category, Product, ProductInfo, Parameter, Prod
     Contact, ConfirmEmailToken
 from backend.serializers import UserSerializer, CategorySerializer, ShopSerializer, ProductInfoSerializer, \
     OrderItemSerializer, OrderSerializer, ContactSerializer
-from backend.signals import new_user_registered, new_order
+from backend.signals import new_user_registered
 
 
 class RegisterAccount(APIView):
@@ -28,27 +30,18 @@ class RegisterAccount(APIView):
     """
 
     # Регистрация методом POST
-
     def post(self, request, *args, **kwargs):
         """
             Process a POST request and create a new user.
-
             Args:
                 request (Request): The Django request object.
-
             Returns:
                 JsonResponse: The response indicating the status of the operation and any errors.
             """
         # проверяем обязательные аргументы
-        for i in request.data:
-            print(i)
-
-
         if {'first_name', 'last_name', 'email', 'password', 'company', 'position'}.issubset(request.data):
 
             # проверяем пароль на сложность
-            print(request.data)
-            sad = 'asd'
             try:
                 validate_password(request.data['password'])
             except Exception as password_error:
@@ -59,17 +52,18 @@ class RegisterAccount(APIView):
                 return JsonResponse({'Status': False, 'Errors': {'password': error_array}})
             else:
                 # проверяем данные для уникальности имени пользователя
-
                 user_serializer = UserSerializer(data=request.data)
                 if user_serializer.is_valid():
                     # сохраняем пользователя
                     user = user_serializer.save()
                     user.set_password(request.data['password'])
+                    if request.data.get('type') == 'shop':
+                        user.type = 'shop'
                     user.save()
+                    new_user_registered.send(sender=self.__class__, user_id=user.id)
                     return JsonResponse({'Status': True})
                 else:
                     return JsonResponse({'Status': False, 'Errors': user_serializer.errors})
-
         return JsonResponse({'Status': False, 'Errors': 'Не указаны все необходимые аргументы'})
 
 
@@ -77,7 +71,6 @@ class ConfirmAccount(APIView):
     """
     Класс для подтверждения почтового адреса
     """
-
     # Регистрация методом POST
     def post(self, request, *args, **kwargs):
         """
@@ -116,6 +109,7 @@ class AccountDetails(APIView):
     Attributes:
     - None
     """
+    permission_classes = [IsAuthenticated]
 
     # получить данные
     def get(self, request: Request, *args, **kwargs):
@@ -128,13 +122,11 @@ class AccountDetails(APIView):
                Returns:
                - Response: The response containing the details of the authenticated user.
         """
-        if not request.user.is_authenticated:
-            return JsonResponse({'Status': False, 'Error': 'Log in required'}, status=403)
-
         serializer = UserSerializer(request.user)
         return Response(serializer.data)
 
-    # Редактирование методом POST
+    # Редактирование данных методом POST.
+    # Если пользователь меняет email, его необходимо заново подтвердить
     def post(self, request, *args, **kwargs):
         """
                 Update the account details of the authenticated user.
@@ -144,13 +136,13 @@ class AccountDetails(APIView):
 
                 Returns:
                 - JsonResponse: The response indicating the status of the operation and any errors.
-                """
+        """
         if not request.user.is_authenticated:
             return JsonResponse({'Status': False, 'Error': 'Log in required'}, status=403)
-        # проверяем обязательные аргументы
 
+        # проверяем обязательные аргументы
         if 'password' in request.data:
-            errors = {}
+
             # проверяем пароль на сложность
             try:
                 validate_password(request.data['password'])
@@ -166,8 +158,15 @@ class AccountDetails(APIView):
         # проверяем остальные данные
         user_serializer = UserSerializer(request.user, data=request.data, partial=True)
         if user_serializer.is_valid():
+
+            #Если email был сменен, то активность пользовятеля становится "False"
+            if request.data['email'] != request.user.email:
+                request.user.is_active = False
+                new_user_registered.send(user_id=user_serializer.user.id)
+                user_serializer.save()
+                return JsonResponse({'Status': True, 'Details': 'Подтвердите email'})
             user_serializer.save()
-            return JsonResponse({'Status': True})
+            return JsonResponse({'Status': True}, status=200)
         else:
             return JsonResponse({'Status': False, 'Errors': user_serializer.errors})
 
@@ -196,6 +195,8 @@ class LoginAccount(APIView):
                     token, _ = Token.objects.get_or_create(user=user)
 
                     return JsonResponse({'Status': True, 'Token': token.key})
+
+                return JsonResponse({'Status': False, 'Errors': 'Подтвердите свой email'})
 
             return JsonResponse({'Status': False, 'Errors': 'Не удалось авторизовать'})
 
@@ -664,7 +665,7 @@ class ContactView(APIView):
         if 'id' in request.data:
             if request.data['id'].isdigit():
                 contact = Contact.objects.filter(id=request.data['id'], user_id=request.user.id).first()
-                print(contact)
+
                 if contact:
                     serializer = ContactSerializer(contact, data=request.data, partial=True)
                     if serializer.is_valid():
